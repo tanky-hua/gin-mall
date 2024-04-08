@@ -47,7 +47,7 @@ type FavoriteListResp struct {
 // 		ProductID:     item1.ProductID,
 // 		CreatedAt:     item1.CreatedAt.Unix(),
 // 		Name:          item2.Name,
-// 		CategoryID:    item2.CategoryID,
+// 		TagID:    item2.TagID,
 // 		Title:         item2.Title,
 // 		Info:          item2.Info,
 // 		ImgPath:       item2.ImgPath,

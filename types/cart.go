@@ -58,7 +58,7 @@ type CartResp struct {
 // 		DiscountPrice: product.DiscountPrice,
 // 		BossId:        boss.ID,
 // 		BossName:      boss.UserName,
-// 		Desc:          product.Info,
+// 		Desc:          product.ComicInfo,
 // 	}
 // 	if conf.UploadModel == consts.UploadModelOss {
 // 		c.ImgPath = product.ImgPath

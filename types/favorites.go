@@ -49,7 +49,7 @@ type FavoriteListResp struct {
 // 		Name:          item2.Name,
 // 		TagID:    item2.TagID,
 // 		Title:         item2.Title,
-// 		Info:          item2.Info,
+// 		ComicInfo:          item2.ComicInfo,
 // 		ImgPath:       item2.ImgPath,
 // 		Price:         item2.Price,
 // 		DiscountPrice: item2.DiscountPrice,

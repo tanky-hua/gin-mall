@@ -46,17 +46,17 @@ type CartResp struct {
 //
 // func BuildCart(cart *model2.Cart, product *model2.Product, boss *model2.User) *CartResp {
 // 	c := &CartResp{
-// 		ID:            cart.ID,
+// 		ComicID:            cart.ComicID,
 // 		UserID:        cart.UserID,
 // 		ProductID:     cart.ProductID,
 // 		CreateAt:      cart.CreatedAt.Unix(),
 // 		Num:           cart.Num,
 // 		MaxNum:        cart.MaxNum,
 // 		Check:         cart.Check,
-// 		Name:          product.Name,
+// 		ComicName:          product.ComicName,
 // 		ImgPath:       conf.PhotoHost + conf.HttpPort + conf.ProductPhotoPath + product.ImgPath,
 // 		DiscountPrice: product.DiscountPrice,
-// 		BossId:        boss.ID,
+// 		BossId:        boss.ComicID,
 // 		BossName:      boss.UserName,
 // 		Desc:          product.ComicInfo,
 // 	}

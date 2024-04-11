@@ -11,7 +11,7 @@ type ListCategoryResp struct {
 
 // func BuildCategory(item *model.Category) Category {
 // 	return Category{
-// 		ID:           item.ID,
+// 		ComicID:           item.ComicID,
 // 		TagName: item.TagName,
 // 		CreateAt:     item.CreatedAt.Unix(),
 // 	}

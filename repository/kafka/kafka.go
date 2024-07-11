@@ -2,251 +2,119 @@ package kafka
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strings"
-	"sync"
-	"time"
-
-	"github.com/Shopify/sarama"
+	kafka "github.com/segmentio/kafka-go"
 	"go.uber.org/zap"
-
-	conf "github.com/CocaineCong/gin-mall/config"
-	"github.com/CocaineCong/gin-mall/pkg/utils/log"
+	"time"
 )
 
-type Kafka struct {
-	Key             string
-	DisableConsumer bool
-	Debug           bool
-	Producer        sarama.SyncProducer
-	Consumer        sarama.Consumer
-	Client          sarama.Client
-}
+const (
+	TopicActualConsume = "normal_consume" //正常消费topic
+	TopicDeadQueue     = "dead_queue"     //死信队列
+	TopicRetryQueue    = "retry_queue"    //重试队列
+	TopicDelayQueue    = "delay_queue"    //延迟队列
+)
 
-var globalKafkaClient *sync.Map
+var kafkaConn *kafka.Conn
 
-func GetClient(key string) (*Kafka, error) {
-	val, ok := globalKafkaClient.Load(key)
-	if !ok {
-		return nil, fmt.Errorf("获取kafka client失败，key：%s", key)
+func InitMQ() {
+	conn, err := kafka.Dial("tcp", "localhost:9092")
+	if err != nil {
+		panic(err)
 	}
-	return val.(*Kafka), nil
+
+	// 设置发送消息的超时时间
+	conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	_, err = conn.WriteMessages(kafka.Message{
+		Key:   []byte("key"),
+		Value: []byte("value"),
+	})
+	fmt.Println("init error:", err)
 }
 
 // SendMessage 发送消息
-func SendMessage(ctx context.Context, key, topic, value string) error {
-	return SendMessagePartitionPar(ctx, key, topic, value, "")
-}
+// 自动创建topic，3次重试
+func SendMessage(topic string, key string, msg []byte, header []kafka.Header, duration time.Duration, writer *kafka.Writer) error {
 
-func SendMessagePartitionPar(ctx context.Context, key, topic, value, partitionKey string) error {
-	kakfa, err := GetClient(key)
-	if err != nil {
-		return err
-	}
+	//fmt.Println(string(msg), time.Now())
 
-	msg := &sarama.ProducerMessage{
-		Topic:     topic,
-		Value:     sarama.StringEncoder(value),
-		Timestamp: time.Now(),
-	}
+	var err error
+	const retries = 3
+	for i := 0; i < retries; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 
-	if partitionKey != "" {
-		msg.Key = sarama.StringEncoder(partitionKey)
-	}
-
-	partition, offset, err := kakfa.Producer.SendMessage(msg)
-
-	if err != nil {
-		return err
-	}
-
-	if kakfa.Debug {
-		log.LogrusObj.Infoln("发送kafka消息成功",
-			zap.Int32("partition", partition),
-			zap.Int64("offset", offset))
-	}
-
-	return err
-}
-
-func InitKafka() {
-	for k, v := range conf.Config.KafKa {
-		key := k
-		val := v
-		scfg := buildConfig(val)
-		kafka, err := newKafkaClient(key, val, scfg)
-		if err != nil {
-			return
-		}
-		globalKafkaClient.Store(key, kafka)
-	}
-}
-
-func buildConfig(v *conf.KafkaConfig) *sarama.Config {
-	cfg := sarama.NewConfig()
-	cfg.Producer.RequiredAcks = sarama.RequiredAcks(v.RequiredAck)
-	cfg.Producer.Return.Successes = true
-
-	if v.Partition == 1 {
-		cfg.Producer.Partitioner = sarama.NewRandomPartitioner
-	}
-
-	if v.Partition == 2 {
-		cfg.Producer.Partitioner = sarama.NewRoundRobinPartitioner
-	}
-
-	if v.ReadTimeout != 0 {
-		cfg.Net.ReadTimeout = time.Duration(v.ReadTimeout) * time.Second
-	}
-
-	if v.WriteTimeout != 0 {
-		cfg.Net.WriteTimeout = time.Duration(v.WriteTimeout) * time.Second
-	}
-
-	if v.MaxOpenRequests != 0 {
-		cfg.Net.MaxOpenRequests = v.MaxOpenRequests
-	}
-
-	return cfg
-}
-
-func newKafkaClient(key string, cfgt interface{}, scfg *sarama.Config) (*Kafka, error) {
-	cfg := cfgt.(*conf.KafkaConfig)
-	client, err := sarama.NewClient(strings.Split(cfg.Address, ","), scfg)
-	if err != nil {
-		return nil, err
-	}
-
-	syncProducer, err := sarama.NewSyncProducer(strings.Split(cfg.Address, ","), scfg)
-	if err != nil {
-		return nil, err
-	}
-
-	consumer, err := sarama.NewConsumer(strings.Split(cfg.Address, ","), scfg)
-	if err != nil {
-		return nil, err
-	}
-
-	return &Kafka{
-		Key:             key,
-		DisableConsumer: cfg.DisableConsumer,
-		Debug:           cfg.Debug,
-		Producer:        syncProducer,
-		Consumer:        consumer,
-		Client:          client,
-	}, nil
-
-}
-
-func ConsumerGroup(ctx context.Context, key, groupId, topics string, msgHandler ConsumerGroupHandler) (err error) {
-	kafka, err := GetClient(key)
-	if err != nil {
-		return
-	}
-
-	if isConsumerDisabled(kafka) {
-		return
-	}
-
-	consumerGroup, err := sarama.NewConsumerGroupFromClient(groupId, kafka.Client)
-	if err != nil {
-		return
-	}
-
-	go func() {
-		defer func() {
-			if err := recover(); err != nil {
-				log.LogrusObj.Error("消费kafka发生panic", zap.Any("panic", err))
-			}
-		}()
-
-		defer func() {
-			err := consumerGroup.Close()
-			if err != nil {
-				log.LogrusObj.Error("close err", zap.Any("panic", err))
-			}
-		}()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				err := consumerGroup.Consume(ctx, strings.Split(topics, ","), ConsumerGroupHandler(func(msg *sarama.ConsumerMessage) error {
-					return middlewareConsumerHandler(msgHandler)(msg)
-				}))
-				if err != nil {
-					log.LogrusObj.Error("消费kafka失败 err", zap.Any("panic", err))
-
-				}
-			}
-		}
-
-	}()
-	return
-}
-
-func Consumer(ctx context.Context, key, topic string, fn func(message *sarama.ConsumerMessage) error) (err error) {
-	kafka, err := GetClient(key)
-	if err != nil {
-		return
-	}
-
-	partitions, err := kafka.Consumer.Partitions(topic)
-	if err != nil {
-		return
-	}
-
-	for _, partition := range partitions {
-		// 针对每个分区创建一个对应的分区消费者
-		offset, errx := kafka.Client.GetOffset(topic, partition, sarama.OffsetNewest)
-		if errx != nil {
-			log.LogrusObj.Infoln("获取Offset失败:", errx)
+		// attempt to create topic prior to publishing the message
+		err = writer.WriteMessages(ctx,
+			kafka.Message{
+				Key:     []byte(key),
+				Value:   msg,
+				Topic:   topic,
+				Time:    time.Now().Add(duration),
+				Headers: header,
+			},
+		)
+		if errors.Is(err, kafka.LeaderNotAvailable) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, kafka.UnknownTopicOrPartition) {
+			time.Sleep(time.Millisecond * 200)
 			continue
 		}
 
-		pc, errx := kafka.Consumer.ConsumePartition(topic, partition, offset)
-		if errx != nil {
-			log.LogrusObj.Infoln("获取Offset失败:", errx)
-			return
+		if err != nil {
+			zap.S().Error("unexpected error %v", err)
+			return err
 		}
-
-		// 从每个分区都消费消息
-		go func(consumer sarama.PartitionConsumer) {
-			defer func() {
-				if err := recover(); err != nil {
-					log.LogrusObj.Error("消费kafka信息发生panic,err:%s", err)
-				}
-			}()
-
-			defer func() {
-				err := pc.Close()
-				if err != nil {
-					log.LogrusObj.Infoln("消费kafka信息发生panic,err:%s", err)
-				}
-			}()
-
-			for {
-				select {
-				case msg := <-pc.Messages():
-					err := middlewareConsumerHandler(fn)(msg)
-					if err != nil {
-						return
-					}
-				case <-ctx.Done():
-					return
-				}
-			}
-
-		}(pc)
+		break
+	}
+	if err != nil {
+		zap.S().Error(err)
+		return err
 	}
 	return nil
 }
 
-func isConsumerDisabled(in *Kafka) bool {
-	if in.DisableConsumer {
-		log.LogrusObj.Infoln("kafka consumer disabled,key:%s", in.Key)
+func Consumer(brokers []string, key, topic string, fn func(message *kafka.Message) error) (err error) {
+	// 创建Reader
+	r := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:  brokers,
+		GroupID:  fmt.Sprintf("%s-group-id", topic),
+		Topic:    topic,
+		MaxBytes: 10e6, // 10MB
+	})
+
+	writer := kafka.Writer{
+		Addr:                   kafka.TCP(brokers...),
+		Balancer:               &kafka.LeastBytes{}, // 指定分区的balancer模式为最小字节分布
+		RequiredAcks:           kafka.RequireAll,    // ack模式
+		AllowAutoTopicCreation: true,                // 自动创建topic
+	}
+	defer writer.Close()
+	// 接收消息
+	for {
+		m, err := r.FetchMessage(context.Background())
+		if err != nil {
+			fmt.Println("read message error:", err)
+			break
+		}
+
+		err = fn(&m)
+		if err != nil {
+			//fmt.Println(time.Now().In(time.Local), ":actual queue send message to retry queue", string(m.Value))
+			err = SendMessage(TopicRetryQueue, string(m.Key), m.Value, m.Headers, 0, &writer)
+			if err != nil {
+				fmt.Println("set error2:", err)
+				continue
+			}
+		}
+
+		if err = r.CommitMessages(context.Background(), m); err != nil {
+			zap.S().Error("failed to commit message:", err)
+		}
 	}
 
-	return in.DisableConsumer
+	// 程序退出前关闭Reader
+	if err = r.Close(); err != nil {
+		zap.S().Error("failed to close reader:", err)
+	}
+	return
 }
